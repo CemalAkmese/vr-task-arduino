@@ -45,6 +45,9 @@ Call sites that changed from `tone(audioamp, ...)` to the new signaling:
 
 ## Companion Due sketch
 
-This Mega sketch expects a Due running a matching listener sketch (`CustomTriggerMega.ino` / `CustomTriggerDue.ino` in the lab archive) that reads `duePin3`/`duePin5` and drives its DAC accordingly.
+This Mega sketch expects a Due running a matching listener sketch that reads `duePin3`/`duePin5` and drives its DAC accordingly. Both are included in this repo:
+
+- [`CustomTriggerMega/CustomTriggerMega.ino`](CustomTriggerMega/CustomTriggerMega.ino) — standalone reference/test sketch showing the signaling API (`go_idle()`, `play_tone_a()`, `play_tone_b()`, `play_white_noise()`) that the main task sketch's `SetSoundState()`/`StartSound()` are modeled on.
+- [`CustomTriggerDue/CustomTriggerDue.ino`](CustomTriggerDue/CustomTriggerDue.ino) — runs on the Due; reads the 2-bit state and synthesizes tone A, tone B, or white noise via its onboard DAC (96 kHz DDS with attack/release envelope).
 
 Confirmed wiring: **Mega pin 3 → Due pin 3**, **Mega pin 5 → Due pin 2**, through a logic level shifter, with a shared ground between boards. The Mega only decides *when* and *which* sound to play by holding these two pins in one of the four level combinations above; the Due does all actual sound synthesis.
