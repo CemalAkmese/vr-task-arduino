@@ -64,13 +64,17 @@ Non-blocking pulse-count encoding: N × 5ms HIGH pulses with 5ms LOW gaps betwee
 
 Events are pushed onto a small FIFO (`QueueEvent()`) and drained one at a time by `EvtFunc()`, called every `loop()`. This guarantees two events firing close together are sent one after another rather than colliding on the wire — at the cost of the second event's pulses being delayed until the first one (plus the 20ms gap) finishes.
 
-**Timing caveat:** `WhiteNoise()` and `FalseAlarm()` still use blocking `delay()` internally (pre-existing in this sketch). While blocked, `EvtFunc()` isn't polled, so a queued code just waits until the blocking section ends before it starts pulsing — nothing collides, but a white-noise event queued right as a false alarm's ~5s timeout begins can be delayed by that long.
+**Timing caveat:** `WhiteNoise()`'s 500ms noise burst still uses a blocking `delay()` internally (pre-existing in this sketch). While blocked, `EvtFunc()` isn't polled, so a queued code just waits until the blocking section ends before it starts pulsing — nothing collides, just a short delay. `FalseAlarm()`'s penalty timeout is no longer blocking (see below), so it no longer holds up the queue.
 
 ### BARCODE_PIN (48) — 32-bit sync barcode, both DAQs
 
-Fires automatically every 30s, independent of task state, following the open-ephys/sync-barcodes standard: `20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`. The 32-bit value is a simple counter that increments once per barcode sent (starts at 0). Implemented non-blockingly via `BarcodeFunc()`, called every `loop()`. The same blocking-`delay()` caveat above applies: a false alarm's penalty delay can push a due barcode a few seconds late.
+Fires automatically every 30s, independent of task state, following the open-ephys/sync-barcodes standard: `20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`. The 32-bit value is a simple counter that increments once per barcode sent (starts at 0). Implemented non-blockingly via `BarcodeFunc()`, called every `loop()`, so it stays on schedule even across false alarms.
 
 Wire `BARCODE_PIN` to the NIDQ sync input and to the behavior DAQ, per your colleague's spec.
+
+### FalseAlarm() penalty is non-blocking
+
+`FalseAlarm()`'s post-noise penalty (`falseAlarmTimeout`, now 2000ms — shortened from the original 5000ms) used to be a blocking `delay()` that froze the whole loop, including `BarcodeFunc()`, `EvtFunc()`, and lick sampling. It's now a `millis()`-based timer (`falseAlarmStarted` / `falseAlarmPenaltyEnd`) checked every `loop()`, so the rest of the sketch keeps running during the penalty. The white-noise burst itself (`PlayWhiteNoiseBlocking`, ~500ms) still blocks, per the caveat above.
 
 ## Companion Due sketch
 

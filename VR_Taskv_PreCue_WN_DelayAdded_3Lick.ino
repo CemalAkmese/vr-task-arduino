@@ -84,7 +84,9 @@ unsigned long toggledeadtime  = 500; // disable button for this time after press
 unsigned long noisedur = 500; // white noiese dur
 unsigned long rewardcuedur = 0;// reward cue
 // Change this value to adjust the penalty duration (in milliseconds)
-unsigned long falseAlarmTimeout = 5000; // e.g., 5 seconds extra penalty
+unsigned long falseAlarmTimeout = 2000; // e.g., 2 seconds extra penalty
+bool falseAlarmStarted = false; // tracks whether the non-blocking penalty timer is running
+unsigned long falseAlarmPenaltyEnd = 0;
 // servo
 Servo spoutmotor;
 unsigned long corridorEndTimer = 0;
@@ -689,20 +691,25 @@ void EndReward() {
 // false alarm ends task with an added penalty delay
 void FalseAlarm() {
   if (active == 6) {
-    // 1. Retract the spouts immediately to remove access
-    spoutmotor.write(servorest);
-    
-    // 2. Play white noise burst
-    QueueEvent(EVT_WHITE_NOISE);
-    PlayWhiteNoiseBlocking(noisedur);
+    if (!falseAlarmStarted) {
+      // 1. Retract the spouts immediately to remove access
+      spoutmotor.write(servorest);
 
-    // 3. Apply the additional False Alarm timeout penalty
-    if (falseAlarmTimeout > 0) {
-      delay(falseAlarmTimeout);
+      // 2. Play white noise burst
+      QueueEvent(EVT_WHITE_NOISE);
+      PlayWhiteNoiseBlocking(noisedur);
+
+      // 3. Start the additional False Alarm timeout penalty (non-blocking)
+      falseAlarmPenaltyEnd = millis() + falseAlarmTimeout;
+      falseAlarmStarted = true;
     }
 
-    // 4. Signal the architecture to progress to the end and reset variables
-    trialend = 1;
+    // 4. Once the penalty has elapsed, signal the architecture to progress
+    // to the end and reset variables
+    if (millis() >= falseAlarmPenaltyEnd) {
+      trialend = 1;
+      falseAlarmStarted = false; // reset for the next false alarm
+    }
   }
 }
 
@@ -744,6 +751,7 @@ void EndTask() {
     prevRsense = LOW;
     lastLeftLickTime = 0;
     lastRightLickTime = 0;
+    falseAlarmStarted = false;
     }
   }
 }
