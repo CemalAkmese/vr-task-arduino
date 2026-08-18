@@ -45,4 +45,6 @@ Call sites that changed from `tone(audioamp, ...)` to the new signaling:
 
 ## Companion Due sketch
 
-This Mega sketch expects a Due running a matching listener sketch (`CustomTriggerMega.ino` / `CustomTriggerDue.ino` in the lab archive) that reads `duePin3`/`duePin5` and drives its DAC accordingly. **Double-check both boards agree on which physical Due pin is wired to Mega pin 5** — the reference Due sketch read it as Due pin 2, while the reference Mega sketch's wiring comment says Due pin 5; make sure the actual wiring and both sketches match before running.
+This Mega sketch expects a Due running a matching listener sketch (`CustomTriggerMega.ino` / `CustomTriggerDue.ino` in the lab archive) that reads `duePin3`/`duePin5` and drives its DAC accordingly.
+
+Confirmed wiring: **Mega pin 3 → Due pin 3**, **Mega pin 5 → Due pin 2**, through a logic level shifter, with a shared ground between boards. The Mega only decides *when* and *which* sound to play by holding these two pins in one of the four level combinations above; the Due does all actual sound synthesis.
