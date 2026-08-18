@@ -4,6 +4,30 @@ Arduino Mega sketch (`VR_Taskv_PreCue_WN_DelayAdded_3Lick.ino`) controlling a VR
 
 This version updates the pin mapping to match new wiring, and moves audio generation off the Mega onto a companion Arduino Due that does the actual tone/white-noise synthesis.
 
+## Changelog
+
+| Type | Item | Detail |
+|---|---|---|
+| Changed | `lcap` (left lick sensor) | 28 → 30 |
+| Changed | `rcap` (right lick sensor) | 30 → 45 |
+| Changed | `lspout` (left solenoid) | 40 → 2 |
+| Changed | `rspout` (right solenoid) | 38 → 40 |
+| Changed | `CueFunc()` | Cue trigger calls `SetSoundState(SND_TONE_A/B)` instead of `tone(audioamp, ...)`; cue-end calls `SetSoundState(SND_IDLE)` |
+| Changed | `GiveReward()` | Reward cue (`rewardcuedur`, `'G'` trials) calls `StartSound(...)` instead of `tone(audioamp, ...)` |
+| Changed | `SerialInfo()` pre-cue (`buf[4]=='H'`/`'T'`) | Calls `StartSound(SND_TONE_B/A, precuedur)` instead of `tone(audioamp, ...)` — non-blocking, so toggle/serial stay responsive |
+| Changed | `WhiteNoise()` / `FalseAlarm()` noise burst | Call `PlayWhiteNoiseBlocking(noisedur)` instead of the manual LFSR bit-bang loop |
+| Changed | `FalseAlarm()` penalty | `delay(falseAlarmTimeout)` replaced with a non-blocking `millis()` timer; default shortened 5000ms → 2000ms |
+| Changed | pin 46 | Was `toneOut` (simple cue-playing flag) → now `EVT_PIN` (pulse-count trial event codes) |
+| Added | `duePin3`, `duePin5` (pins 3, 5) | 2-bit sound-state signal to the Due |
+| Added | `SetSoundState()`, `StartSound()`, `SoundTimerFunc()`, `PlayWhiteNoiseBlocking()` | Due sound-signaling helpers |
+| Added | `EVT_PIN` (46) + `QueueEvent()` / `EvtFunc()` | Non-blocking, queued pulse-count event codes to the behavior DAQ |
+| Added | `BARCODE_PIN` (48) + `BarcodeFunc()` | Non-blocking 32-bit sync barcode, every 30s, to both DAQs |
+| Removed | `audioamp` (old pin 3) | Replaced by `duePin3`/`duePin5` |
+| Removed | `generateNoise()`, `LFSR_INIT`, `LFSR_MASK` | On-Mega noise synthesis deleted — the Due generates noise now |
+| Removed | All `tone(audioamp, ...)` calls | In `CueFunc()`, `GiveReward()` (×2), `SerialInfo()` (×2) |
+
+Left unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44), `servoOut`(50).
+
 ## Pin changes
 
 | Function | Variable | Old pin | New pin |
