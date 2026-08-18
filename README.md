@@ -43,6 +43,55 @@ Left unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44
 
 Unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44), `servoOut`(50) — not part of the audio or DAQ-sync path, no new pin was specified for these.
 
+## Wiring diagram
+
+```mermaid
+graph LR
+  subgraph Mega["Arduino Mega"]
+    M3["pin 3 (duePin3)"]
+    M5["pin 5 (duePin5)"]
+    M46["pin 46 (EVT_PIN)"]
+    M48["pin 48 (BARCODE_PIN)"]
+    M2["pin 2 (lspout)"]
+    M40["pin 40 (rspout)"]
+    M30["pin 30 (lcap)"]
+    M45["pin 45 (rcap)"]
+  end
+
+  LS["Logic level shifter<br/>5V to 3.3V"]
+
+  subgraph Due["Arduino Due"]
+    D3["pin 3"]
+    D2["pin 2"]
+    DAC["DAC0 / DAC1"]
+  end
+
+  Speaker["Amplifier / speaker"]
+  BehDAQ["Behavior DAQ"]
+  NIDQ["NIDQ / ephys DAQ"]
+  LSol["Left solenoid"]
+  RSol["Right solenoid"]
+  LSense["Left lick sensor"]
+  RSense["Right lick sensor"]
+
+  M3 --> LS --> D3
+  M5 --> LS --> D2
+  D3 --> DAC
+  D2 --> DAC
+  DAC --> Speaker
+
+  M46 -- "trial event codes" --> BehDAQ
+  M48 -- "32-bit sync barcode" --> BehDAQ
+  M48 -- "32-bit sync barcode" --> NIDQ
+
+  M2 --> LSol
+  M40 --> RSol
+  LSense --> M30
+  RSense --> M45
+```
+
+Both boards share a common ground (Mega GND → level shifter GND → Due GND), and the sync barcode fans out to both DAQs so their recordings can be aligned afterward.
+
 ## Audio architecture
 
 Previously the Mega generated its own tones (`tone()`) and white noise (an on-board LFSR bit-banged onto the `audioamp` pin). That's been removed. Audio synthesis now happens on a separate Due board; the Mega only tells it *what* to play by holding two pins (`duePin3`, `duePin5`) in one of four level combinations:
@@ -75,24 +124,34 @@ Two more outputs were added to mark trial events and keep the Mega's clock align
 
 ### EVT_PIN (46) — trial event pulse codes, behavior DAQ only
 
-Non-blocking pulse-count encoding: N × 5ms HIGH pulses with 5ms LOW gaps between them = event code N, followed by a 20ms silence before the next code starts (so consecutive codes are distinguishable). This pin used to be `toneOut` (a simple "cue playing" HIGH/LOW flag); that behavior is gone, replaced entirely by these event codes.
+A single wire can't carry a "which event" label directly, so `EVT_PIN` encodes the event as **how many pulses it sends**: event code `N` is `N × 5ms HIGH` pulses separated by `5ms LOW` gaps, followed by a `20ms` silence before the next code — long enough for the DAQ to tell where one code ends and the next begins. This pin used to be `toneOut` (a simple "cue playing" flag); that's gone, fully replaced by these codes.
 
 | Code | Event |
 |---|---|
 | 1 | Reward right |
 | 2 | Reward left |
-| 3 | Reward centre *(defined for parity with other rigs — this task has no center spout, so nothing currently triggers it)* |
+| 3 | Reward centre *(reserved — no center spout in this task yet)* |
 | 4 | White noise played |
 | 5 | Servo moved (extended to task position) |
 | 6 | Servo retracted |
 
-Events are pushed onto a small FIFO (`QueueEvent()`) and drained one at a time by `EvtFunc()`, called every `loop()`. This guarantees two events firing close together are sent one after another rather than colliding on the wire — at the cost of the second event's pulses being delayed until the first one (plus the 20ms gap) finishes.
+Two pieces keep this safe to call from anywhere without pulse trains colliding:
+- **`QueueEvent(code)`** — called the instant an event happens; just appends the code to a FIFO, touches nothing on the wire.
+- **`EvtFunc()`** — called every `loop()`; a `millis()`-driven state machine that steps through the current code's pulses, or pulls the next queued code once the current one (plus its gap) finishes. No `delay()` involved.
 
-**Timing caveat:** `WhiteNoise()`'s 500ms noise burst still uses a blocking `delay()` internally (pre-existing in this sketch). While blocked, `EvtFunc()` isn't polled, so a queued code just waits until the blocking section ends before it starts pulsing — nothing collides, just a short delay. `FalseAlarm()`'s penalty timeout is no longer blocking (see below), so it no longer holds up the queue.
+If two events fire close together, the second one's pulses simply wait in the queue instead of overlapping — and the rest of the sketch (lick sampling, servo, sound) never pauses for this.
+
+**Timing caveat:** `WhiteNoise()`'s 500ms noise burst still uses a blocking `delay()` internally (pre-existing in this sketch). A code queued during that window just starts pulsing once it ends — a short delay, not a collision.
 
 ### BARCODE_PIN (48) — 32-bit sync barcode, both DAQs
 
-Fires automatically every 30s, independent of task state, following the open-ephys/sync-barcodes standard: `20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`. The 32-bit value is a simple counter that increments once per barcode sent (starts at 0). Implemented non-blockingly via `BarcodeFunc()`, called every `loop()`, so it stays on schedule even across false alarms.
+Gives the behavior DAQ and the ephys/NIDQ DAQ a shared clock reference, broadcast to both at once, so their independent recordings can be aligned afterward. Every 30s the Mega sends its internal counter as a binary number:
+
+`20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`
+
+Each bit-slot is just the pin held HIGH (`1`) or LOW (`0`) for 29ms — the level itself is the bit. The value sent is a plain counter (0, 1, 2, ...) incremented once per barcode, not a timestamp; each DAQ timestamps *its own* arrival of barcode `N` locally, and matching those `N`s across the two recordings is what aligns the clocks. This follows the open-ephys/IBL sync-barcode format so existing decoding tools work unmodified.
+
+Like `EvtFunc()`, `BarcodeFunc()` is a `millis()`-driven state machine (`BC_IDLE → BC_START → BC_GAP → BC_BIT`) called every `loop()`. Sending one barcode with blocking delays would freeze the Mega for ~1s every 30s — missed licks, late servo moves — so instead each call just checks "has enough time passed to flip the pin?" and returns immediately. It runs continuously regardless of task state, since it's a background heartbeat rather than a task event.
 
 Wire `BARCODE_PIN` to the NIDQ sync input and to the behavior DAQ, per your colleague's spec.
 
