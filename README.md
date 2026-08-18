@@ -167,3 +167,27 @@ This Mega sketch expects a Due running a matching listener sketch that reads `du
 - [`CustomTriggerDue/CustomTriggerDue.ino`](CustomTriggerDue/CustomTriggerDue.ino) — runs on the Due; reads the 2-bit state and synthesizes tone A, tone B, or white noise via its onboard DAC (96 kHz DDS with attack/release envelope).
 
 Confirmed wiring: **Mega pin 3 → Due pin 3**, **Mega pin 5 → Due pin 2**, through a logic level shifter, with a shared ground between boards. The Mega only decides *when* and *which* sound to play by holding these two pins in one of the four level combinations above; the Due does all actual sound synthesis.
+
+## Running instructions
+
+Only two sketches actually get uploaded to hardware — `CustomTriggerMega.ino` is a reference only, not something you flash.
+
+| Sketch | Board | Upload it? |
+|---|---|---|
+| `VR_Taskv_PreCue_WN_DelayAdded_3Lick.ino` | Mega | **Yes** — the task logic, driven by Bonsai over serial as usual |
+| `CustomTriggerDue/CustomTriggerDue.ino` | Due | **Yes** — must be running for any sound to actually play |
+| `CustomTriggerMega/CustomTriggerMega.ino` | — | **No** |
+
+`CustomTriggerMega.ino` is a standalone demo showing the pin-signaling pattern (`go_idle()`, `play_tone_a()`, etc.) that `VR_Taskv_PreCue_WN_DelayAdded_3Lick.ino`'s `SetSoundState()`/`StartSound()`/`EvtFunc()` are modeled on — its `loop()` just cycles Tone A → Tone B → noise on a fixed timer and has no task logic. Flashing it to the Mega would overwrite your real task sketch, since a board only runs one sketch at a time.
+
+**Setup, once per rig:**
+
+1. Flash the Due with `CustomTriggerDue.ino` and leave it powered continuously — it idles, listening on pins 2/3, until the Mega drives them.
+2. Flash the Mega with `VR_Taskv_PreCue_WN_DelayAdded_3Lick.ino`, same as always.
+3. Wire Mega pin 3 → level shifter → Due pin 3, Mega pin 5 → level shifter → Due pin 2, shared ground — per the [wiring diagram](#wiring-diagram) above.
+4. Sanity check once: open the Due's own Serial monitor and confirm it prints `Ready. Waiting for signal on Due pins 2/3.` at boot, so a wiring or flashing problem shows up before a real session.
+
+**Each session:**
+
+1. Power up both boards (Due first or simultaneously — it just waits idle either way).
+2. Start your Bonsai workflow exactly as before. Bonsai only talks to the **Mega** over serial; the Due is invisible to it, purely downstream on the audio-signaling wires — nothing about the Bonsai-facing interface changed.
