@@ -108,9 +108,13 @@ int ch_spoutmotor = 7; // servo
 // outputs daq
 int lsenseOut = 42;
 int rsenseOut = 44;
-int toneOut = 46;
 int servoOut = 50;
 //20 and 21 for i2c output
+
+// trial event pulse codes -> behavior DAQ only (see EvtFunc())
+int EVT_PIN = 46;
+// 32-bit sync barcode -> both DAQs (see BarcodeFunc())
+int BARCODE_PIN = 48;
 
 
 //set up serial parsing
@@ -193,7 +197,150 @@ void PlayWhiteNoiseBlocking(unsigned long dur) {
 }
 
 void WhiteNoise() {
+  QueueEvent(EVT_WHITE_NOISE);
   PlayWhiteNoiseBlocking(noisedur);
+}
+
+// =============================================================
+// EVT_PIN: trial event pulse codes -> behavior DAQ only
+// Non-blocking pulse-count encoding: N x 5ms HIGH pulses with 5ms LOW
+// gaps between them = event code N. Events are queued so two events
+// firing close together never collide on the wire -- each code is
+// sent to completion (plus a longer inter-code gap) before the next
+// one starts.
+// =============================================================
+
+const int EVT_REWARD_RIGHT    = 1;
+const int EVT_REWARD_LEFT     = 2;
+const int EVT_REWARD_CENTRE   = 3; // defined for parity with other rigs; nothing in this task triggers it (no center spout)
+const int EVT_WHITE_NOISE     = 4;
+const int EVT_SERVO_MOVED     = 5; // servo extended to task position
+const int EVT_SERVO_RETRACTED = 6;
+
+const unsigned long evtPulseHigh = 5;  // ms
+const unsigned long evtPulseLow  = 5;  // ms
+const unsigned long evtCodeGap   = 20; // ms silence between two different codes
+
+#define EVT_QUEUE_LEN 8
+int evtQueue[EVT_QUEUE_LEN];
+int evtQueueHead = 0;
+int evtQueueTail = 0;
+int evtQueueCount = 0;
+
+bool evtActive = false;
+bool evtPinHigh = false;
+int evtPulsesLeft = 0;
+unsigned long evtNextChange = 0;
+
+void QueueEvent(int code) {
+  if (code <= 0 || evtQueueCount >= EVT_QUEUE_LEN) return; // drop if full, shouldn't happen
+  evtQueue[evtQueueTail] = code;
+  evtQueueTail = (evtQueueTail + 1) % EVT_QUEUE_LEN;
+  evtQueueCount++;
+}
+
+// call every loop(); pumps the queued event codes out on EVT_PIN
+void EvtFunc() {
+  unsigned long now = millis();
+
+  if (!evtActive) {
+    if (evtQueueCount > 0 && now >= evtNextChange) {
+      evtPulsesLeft = evtQueue[evtQueueHead];
+      evtQueueHead = (evtQueueHead + 1) % EVT_QUEUE_LEN;
+      evtQueueCount--;
+      evtActive = true;
+      digitalWriteFast(EVT_PIN, HIGH);
+      evtPinHigh = true;
+      evtNextChange = now + evtPulseHigh;
+    }
+    return;
+  }
+
+  if (now < evtNextChange) return;
+
+  if (evtPinHigh) {
+    // end of a HIGH pulse
+    digitalWriteFast(EVT_PIN, LOW);
+    evtPinHigh = false;
+    evtPulsesLeft--;
+    if (evtPulsesLeft <= 0) {
+      evtActive = false;
+      evtNextChange = now + evtCodeGap; // hold off next code so codes don't run together
+    } else {
+      evtNextChange = now + evtPulseLow;
+    }
+  } else {
+    // start of the next pulse in the same code
+    digitalWriteFast(EVT_PIN, HIGH);
+    evtPinHigh = true;
+    evtNextChange = now + evtPulseHigh;
+  }
+}
+
+// =============================================================
+// BARCODE_PIN: 32-bit sync barcode -> both DAQs
+// 20ms HIGH start pulse -> 20ms LOW gap -> 32 x 29ms data bits
+// (LSB first) -> 30s wait, then repeat with an incrementing counter.
+// Runs continuously regardless of task state.
+// =============================================================
+
+const unsigned long barcodeInterval  = 30000; // ms between barcodes
+const unsigned long barcodeStartDur  = 20;    // ms
+const unsigned long barcodeGapDur    = 20;    // ms
+const unsigned long barcodeBitDur    = 29;    // ms per bit
+
+enum BarcodePhase { BC_IDLE, BC_START, BC_GAP, BC_BIT };
+
+unsigned long barcodeValue = 0; // increments once per barcode sent
+BarcodePhase barcodePhase = BC_IDLE;
+unsigned long barcodeCycleStart = 0;
+unsigned long barcodePhaseEnd = 0;
+int barcodeBitIndex = 0;
+
+void BarcodeFunc() {
+  unsigned long now = millis();
+
+  switch (barcodePhase) {
+    case BC_IDLE:
+      if (now - barcodeCycleStart >= barcodeInterval) {
+        digitalWriteFast(BARCODE_PIN, HIGH);
+        barcodePhaseEnd = now + barcodeStartDur;
+        barcodePhase = BC_START;
+      }
+      break;
+
+    case BC_START:
+      if (now >= barcodePhaseEnd) {
+        digitalWriteFast(BARCODE_PIN, LOW);
+        barcodePhaseEnd = now + barcodeGapDur;
+        barcodePhase = BC_GAP;
+      }
+      break;
+
+    case BC_GAP:
+      if (now >= barcodePhaseEnd) {
+        barcodeBitIndex = 0;
+        digitalWriteFast(BARCODE_PIN, bitRead(barcodeValue, 0) ? HIGH : LOW);
+        barcodePhaseEnd = now + barcodeBitDur;
+        barcodePhase = BC_BIT;
+      }
+      break;
+
+    case BC_BIT:
+      if (now >= barcodePhaseEnd) {
+        barcodeBitIndex++;
+        if (barcodeBitIndex >= 32) {
+          digitalWriteFast(BARCODE_PIN, LOW);
+          barcodeValue++;
+          barcodeCycleStart = now; // 30s wait starts from end of transmission
+          barcodePhase = BC_IDLE;
+        } else {
+          digitalWriteFast(BARCODE_PIN, bitRead(barcodeValue, barcodeBitIndex) ? HIGH : LOW);
+          barcodePhaseEnd = now + barcodeBitDur;
+        }
+      }
+      break;
+  }
 }
 void setup() {
 
@@ -209,12 +356,16 @@ void setup() {
   pinMode(duePin3, OUTPUT);
   pinMode(duePin5, OUTPUT);
   pinMode(lcap, INPUT);
-  pinMode(toneOut, OUTPUT);
+  pinMode(EVT_PIN, OUTPUT);
+  pinMode(BARCODE_PIN, OUTPUT);
   pinMode(servoOut, OUTPUT);
   pinMode(rsenseOut, OUTPUT);
   pinMode(lsenseOut, OUTPUT);
   pinMode(toggle, INPUT_PULLUP);
   SetSoundState(SND_IDLE); // Due starts up idle (both lines HIGH)
+  digitalWriteFast(EVT_PIN, LOW);
+  digitalWriteFast(BARCODE_PIN, LOW);
+  barcodeCycleStart = millis(); // first sync barcode fires 30s after boot
   // random seed for tone choice
   randomSeed(analogRead(1));
 
@@ -286,6 +437,8 @@ void loop() {
   FalseAlarm();
   NoResponse();
   SoundTimerFunc();
+  EvtFunc();
+  BarcodeFunc();
 
   // write out info
   WriteOut();
@@ -308,7 +461,6 @@ void   CueFunc() {
         }
         toneon = 2; //record tone out to flag
         active = 2; // next task stage
-        digitalWriteFast(toneOut, HIGH);
       }
     }
     if (toneon == 0) {
@@ -322,7 +474,6 @@ void   CueFunc() {
   if (active == 2) {
     if (toneon == 2) {
       if (currentmillis - pretonewin - cuedur >= tasktime) {
-        digitalWriteFast(toneOut, LOW);
         SetSoundState(SND_IDLE);
       }
     }
@@ -356,6 +507,7 @@ void ServoFunc() {
           active = 3;
           spouttime = currentmillis; // Start counting time that servo has moved in
           breakStarted = false;      // Reset the flag for the next trial
+          QueueEvent(EVT_SERVO_MOVED);
         }
       }
     }
@@ -374,6 +526,7 @@ void ServoFunc() {
       servopos = 0;
       servoval = servorest;
       breakStarted = false; // Ensure it's reset if a trial aborts
+      QueueEvent(EVT_SERVO_RETRACTED);
     }
   }
 }
@@ -495,6 +648,7 @@ void GiveReward() {
       taskoutcome = 1;
       spouton = 1;
       active = 7;
+      QueueEvent(EVT_REWARD_LEFT);
     }
     if (dirtouch == 2 || dirtouch == 4) {
       digitalWriteFast(rspout, HIGH);
@@ -506,6 +660,7 @@ void GiveReward() {
       taskoutcome = 1;
       spouton = 1;
       active = 7;
+      QueueEvent(EVT_REWARD_RIGHT);
     }
   if (touchedother ==1){
     taskoutcome = 4; // if reward but touched other spout is true, return correction trial
@@ -538,6 +693,7 @@ void FalseAlarm() {
     spoutmotor.write(servorest);
     
     // 2. Play white noise burst
+    QueueEvent(EVT_WHITE_NOISE);
     PlayWhiteNoiseBlocking(noisedur);
 
     // 3. Apply the additional False Alarm timeout penalty

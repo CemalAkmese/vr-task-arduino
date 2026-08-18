@@ -14,8 +14,10 @@ This version updates the pin mapping to match new wiring, and moves audio genera
 | Right solenoid | `rspout` | 38 | 40 |
 | Audio trigger (bit 0) | `duePin3` | — (new) | 3 |
 | Audio trigger (bit 1) | `duePin5` | — (new, replaces `audioamp`) | 5 |
+| Trial event pulse codes → behavior DAQ only | `EVT_PIN` | 46 (was `toneOut`) | 46 |
+| Sync barcode → both DAQs | `BARCODE_PIN` | — (new) | 48 |
 
-Unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44), `toneOut`(46), `servoOut`(50) — not part of the audio path, no new pin was specified for these.
+Unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44), `servoOut`(50) — not part of the audio or DAQ-sync path, no new pin was specified for these.
 
 ## Audio architecture
 
@@ -42,6 +44,33 @@ Call sites that changed from `tone(audioamp, ...)` to the new signaling:
 - `CueFunc()` — main task cue (tone A/B chosen by `freq == freq_b`)
 - `GiveReward()` — reward cue for `'G'`/Go-NoGo trials (`rewardcuedur`)
 - `SerialInfo()` — pre-cue tone sent before a trial starts (`buf[4] == 'H'`/`'T'`)
+
+## DAQ sync: EVT_PIN and BARCODE_PIN
+
+Two more outputs were added to mark trial events and keep the Mega's clock aligned with the DAQ(s), separate from the audio-trigger pins above.
+
+### EVT_PIN (46) — trial event pulse codes, behavior DAQ only
+
+Non-blocking pulse-count encoding: N × 5ms HIGH pulses with 5ms LOW gaps between them = event code N, followed by a 20ms silence before the next code starts (so consecutive codes are distinguishable). This pin used to be `toneOut` (a simple "cue playing" HIGH/LOW flag); that behavior is gone, replaced entirely by these event codes.
+
+| Code | Event |
+|---|---|
+| 1 | Reward right |
+| 2 | Reward left |
+| 3 | Reward centre *(defined for parity with other rigs — this task has no center spout, so nothing currently triggers it)* |
+| 4 | White noise played |
+| 5 | Servo moved (extended to task position) |
+| 6 | Servo retracted |
+
+Events are pushed onto a small FIFO (`QueueEvent()`) and drained one at a time by `EvtFunc()`, called every `loop()`. This guarantees two events firing close together are sent one after another rather than colliding on the wire — at the cost of the second event's pulses being delayed until the first one (plus the 20ms gap) finishes.
+
+**Timing caveat:** `WhiteNoise()` and `FalseAlarm()` still use blocking `delay()` internally (pre-existing in this sketch). While blocked, `EvtFunc()` isn't polled, so a queued code just waits until the blocking section ends before it starts pulsing — nothing collides, but a white-noise event queued right as a false alarm's ~5s timeout begins can be delayed by that long.
+
+### BARCODE_PIN (48) — 32-bit sync barcode, both DAQs
+
+Fires automatically every 30s, independent of task state, following the open-ephys/sync-barcodes standard: `20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`. The 32-bit value is a simple counter that increments once per barcode sent (starts at 0). Implemented non-blockingly via `BarcodeFunc()`, called every `loop()`. The same blocking-`delay()` caveat above applies: a false alarm's penalty delay can push a due barcode a few seconds late.
+
+Wire `BARCODE_PIN` to the NIDQ sync input and to the behavior DAQ, per your colleague's spec.
 
 ## Companion Due sketch
 
