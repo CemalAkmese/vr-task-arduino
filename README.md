@@ -21,7 +21,7 @@ This version updates the pin mapping to match new wiring, and moves audio genera
 | Added | `duePin3`, `duePin5` (pins 3, 5) | 2-bit sound-state signal to the Due |
 | Added | `SetSoundState()`, `StartSound()`, `SoundTimerFunc()`, `PlayWhiteNoiseBlocking()` | Due sound-signaling helpers |
 | Added | `EVT_PIN` (46) + `QueueEvent()` / `EvtFunc()` | Non-blocking, queued pulse-count event codes to the behavior DAQ |
-| Added | `BARCODE_PIN` (48) + `BarcodeFunc()` | Non-blocking 32-bit sync barcode, every 30s, to both DAQs |
+| Added | `BARCODE_PIN` (48) + `BarcodeFunc()` | Non-blocking 32-bit sync barcode, every 30s, currently wired to the behavior DAQ (NIDQ leg planned, not yet connected) |
 | Removed | `audioamp` (old pin 3) | Replaced by `duePin3`/`duePin5` |
 | Removed | `generateNoise()`, `LFSR_INIT`, `LFSR_MASK` | On-Mega noise synthesis deleted — the Due generates noise now |
 | Removed | All `tone(audioamp, ...)` calls | In `CueFunc()`, `GiveReward()` (×2), `SerialInfo()` (×2) |
@@ -39,7 +39,7 @@ Left unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44
 | Audio trigger (bit 0) | `duePin3` | — (new) | 3 |
 | Audio trigger (bit 1) | `duePin5` | — (new, replaces `audioamp`) | 5 |
 | Trial event pulse codes → behavior DAQ only | `EVT_PIN` | 46 (was `toneOut`) | 46 |
-| Sync barcode → both DAQs | `BARCODE_PIN` | — (new) | 48 |
+| Sync barcode → behavior DAQ (NIDQ leg planned) | `BARCODE_PIN` | — (new) | 48 |
 
 Unchanged: `toggle`(4), `ch_spoutmotor`(7), `lsenseOut`(42), `rsenseOut`(44), `servoOut`(50) — not part of the audio or DAQ-sync path, no new pin was specified for these.
 
@@ -68,7 +68,7 @@ graph LR
 
   Speaker["Amplifier / speaker"]
   BehDAQ["Behavior DAQ"]
-  NIDQ["NIDQ / ephys DAQ"]
+  NIDQ["NIDQ / ephys DAQ<br/>(not yet connected)"]
   LSol["Left solenoid"]
   RSol["Right solenoid"]
   LSense["Left lick sensor"]
@@ -82,7 +82,7 @@ graph LR
 
   M46 -- "trial event codes" --> BehDAQ
   M48 -- "32-bit sync barcode" --> BehDAQ
-  M48 -- "32-bit sync barcode" --> NIDQ
+  M48 -. "32-bit sync barcode (planned)" .-> NIDQ
 
   M2 --> LSol
   M40 --> RSol
@@ -90,7 +90,7 @@ graph LR
   RSense --> M45
 ```
 
-Both boards share a common ground (Mega GND → level shifter GND → Due GND), and the sync barcode fans out to both DAQs so their recordings can be aligned afterward.
+Both boards share a common ground (Mega GND → level shifter GND → Due GND). `BARCODE_PIN` is currently wired only to the behavior DAQ; the NIDQ/ephys leg (dashed) is planned but not yet connected — once it is, both DAQs see the same barcode and their recordings can be aligned afterward.
 
 ## Audio architecture
 
@@ -143,9 +143,9 @@ If two events fire close together, the second one's pulses simply wait in the qu
 
 **Timing caveat:** `WhiteNoise()`'s 500ms noise burst still uses a blocking `delay()` internally (pre-existing in this sketch). A code queued during that window just starts pulsing once it ends — a short delay, not a collision.
 
-### BARCODE_PIN (48) — 32-bit sync barcode, both DAQs
+### BARCODE_PIN (48) — 32-bit sync barcode
 
-Gives the behavior DAQ and the ephys/NIDQ DAQ a shared clock reference, broadcast to both at once, so their independent recordings can be aligned afterward. Every 30s the Mega sends its internal counter as a binary number:
+Meant to give the behavior DAQ and the ephys/NIDQ DAQ a shared clock reference, broadcast to both at once, so their independent recordings can be aligned afterward — **currently only the behavior DAQ is wired up**; the NIDQ leg is planned but not yet connected. Every 30s the Mega sends its internal counter as a binary number:
 
 `20ms HIGH start pulse → 20ms LOW gap → 32 × 29ms data bits (LSB first) → 30s wait`
 
@@ -153,7 +153,7 @@ Each bit-slot is just the pin held HIGH (`1`) or LOW (`0`) for 29ms — the leve
 
 Like `EvtFunc()`, `BarcodeFunc()` is a `millis()`-driven state machine (`BC_IDLE → BC_START → BC_GAP → BC_BIT`) called every `loop()`. Sending one barcode with blocking delays would freeze the Mega for ~1s every 30s — missed licks, late servo moves — so instead each call just checks "has enough time passed to flip the pin?" and returns immediately. It runs continuously regardless of task state, since it's a background heartbeat rather than a task event.
 
-Wire `BARCODE_PIN` to the NIDQ sync input and to the behavior DAQ, per your colleague's spec.
+Wire `BARCODE_PIN` to the NIDQ sync input once that connection exists; for now it's wired only to the behavior DAQ, per your colleague's spec.
 
 ### FalseAlarm() penalty is non-blocking
 
